@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import List, Sequence
+import json
 
 from fake_dataset import generate_fake_dataset
 
@@ -143,15 +144,15 @@ def benchmark(all_files: Sequence[Path], queue_depth: int, drop_caches=0):
     path_queue.close()
     path_queue.join_thread()
 
-    for w in workers:
-        w.join()
-    used_t = time.perf_counter() - start_t
     completed_count = 0
     for i in range(queue_depth):
         completed_count += result_queue.get()
+    used_t = time.perf_counter() - start_t
+    for w in workers:
+        w.join()
 
     logger.info('Benchmark finished. read %d files in %f seconds', completed_count, used_t)
-    return completed_count, used_t
+    return {'fileCount': completed_count, 'usedTime': used_t}
 
 
 def size(size_str):
@@ -168,6 +169,7 @@ def main():
     parser.add_argument('--path', type=Path, default=Path('dataset_fs_benchmark'))
     parser.add_argument('--file-size', type=size, default=32 * 1024)
     parser.add_argument('--total-size', type=size, default=2 * (1024 ** 3))
+    parser.add_argument('-o', '--output', type=Path, default=Path('results.json'))
     args = parser.parse_args()
 
     if args.path.exists():
@@ -188,6 +190,7 @@ def main():
     all_read_files = [mount_target / p.relative_to(dataset_path) for p in all_files]
 
     all_fs = [Ext4, SquashFs, Erofs]
+    results = {}
     for fs_class in all_fs:
         fs: TestFS = fs_class(
             base_path=args.path,
@@ -195,12 +198,19 @@ def main():
             total_size=args.total_size,
             file_from=dataset_path,
         )
+        fs_results = []
         with fs.test():
+            logger.info('Warmup')
+            benchmark(all_read_files, queue_depth=4)
             logger.info('Benchmarking fs: %s', fs.name)
-            benchmark(all_read_files, queue_depth=1, drop_caches=3)
-            benchmark(all_read_files, queue_depth=8, drop_caches=3)
-            benchmark(all_read_files, queue_depth=64, drop_caches=3)
-
+            for qdepth in [1, 8, 64]:
+                res = benchmark(all_read_files, queue_depth=qdepth, drop_caches=3)
+                res['queueDepth'] = qdepth
+                res['dropCaches'] = 3
+                fs_results.append(res)
+        results[fs.name] = fs_results
+        with args.output.open('w') as f:
+            json.dump(results, f, indent=4)
 
     logger.info('Cleanup')
     subprocess.run(['sudo', 'umount', str(args.path)], check=True)
