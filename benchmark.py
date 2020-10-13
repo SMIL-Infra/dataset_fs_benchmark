@@ -52,8 +52,11 @@ class Ext4(TestFS):
     def setup(self):
         fs_size_mb = int(self.total_size * 1.2 / 1024**2)
         subprocess.run(['dd', 'if=/dev/zero', f'of={self.fs_image_path}', 'bs=1M', f'count={fs_size_mb}'], check=True)
-        subprocess.run(['mkfs.ext4', '-d', str(self.file_from), str(self.fs_image_path)], check=True)
+        subprocess.run(['mkfs.ext4', str(self.fs_image_path)], check=True)
         self.mount_target.mkdir()
+        subprocess.run(['sudo', 'mount', '-o', 'loop', str(self.fs_image_path), str(self.mount_target)], check=True)
+        subprocess.run(['sudo', 'cp', '-r', f'{self.file_from}/.' , str(self.mount_target)], check=True)
+        subprocess.run(['sudo', 'umount', str(self.mount_target)], check=True)
         subprocess.run(['sudo', 'mount', '-o', 'loop', str(self.fs_image_path), str(self.mount_target)], check=True)
 
     def teardown(self):
