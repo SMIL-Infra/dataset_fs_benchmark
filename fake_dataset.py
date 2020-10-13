@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import random
 import string
+from typing import List
 from tqdm import tqdm
 
 
@@ -17,12 +18,12 @@ def new_path(in_dir: str):
 
 def generate_fake_dataset(dir: Path, file_size: int, total_size: int):
     file_count = total_size // file_size
-    logger.info('Generating fake dataset files at %s. %d files of %d bytes', dir, file_size, file_count)
+    logger.info('Generating fake dataset files at %s. %d files of %d bytes', dir, file_count, file_size)
 
     assert not dir.exists()
     dir.mkdir()
 
-    all_files = []
+    all_files: List[Path] = []
     for i in tqdm(range(file_count)):
         data = os.urandom(file_size)
         path = new_path(dir)

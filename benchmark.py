@@ -1,10 +1,13 @@
 import argparse
 import logging
-import subprocess
-from contextlib import contextmanager
-from pathlib import Path
+import random
 import shutil
+import subprocess
 import time
+from contextlib import contextmanager
+from multiprocessing import Process, Queue
+from pathlib import Path
+from typing import List, Sequence
 
 from fake_dataset import generate_fake_dataset
 
@@ -98,11 +101,73 @@ class Erofs(TestFS):
         self.fs_image_path.unlink()
 
 
+def benchmark_worker(path_queue: Queue, exit_time: float, result_queue: Queue):
+    completed_count = 0
+    while True:
+        t = time.perf_counter()
+        if t > exit_time:
+            break
+        p = path_queue.get()
+        if p is None:
+            break
+        with p.open('rb') as f:
+            f.read()
+        completed_count += 1
+
+    logger.debug('Worker finished. completed %d files', completed_count)
+    result_queue.put(completed_count)
+    result_queue.close()
+
+def benchmark(all_files: Sequence[Path], queue_depth: int, drop_caches=0):
+    logger.info('Benchmarking. queue depth: %d', queue_depth)
+    if drop_caches > 0:
+        subprocess.run(['sudo', 'sh', '-c', f'echo {drop_caches} > /proc/sys/vm/drop_caches'])
+
+    path_queue = Queue()
+    random.shuffle(all_files)
+
+    end_t = time.perf_counter() + 30.0
+    workers: List[Process] = []
+    result_queue = Queue()
+    for i in range(queue_depth):
+        worker = Process(target=benchmark_worker, args=(path_queue, end_t, result_queue))
+        worker.start()
+        workers.append(worker)
+    logger.debug('All workers started')
+
+    start_t = time.perf_counter()
+    for f in all_files:
+        path_queue.put(f)
+    for i in range(queue_depth):
+        path_queue.put(None)
+    path_queue.close()
+    path_queue.join_thread()
+
+    for w in workers:
+        w.join()
+    used_t = time.perf_counter() - start_t
+    completed_count = 0
+    for i in range(queue_depth):
+        completed_count += result_queue.get()
+
+    logger.info('Benchmark finished. read %d files in %f seconds', completed_count, used_t)
+    return completed_count, used_t
+
+
+def size(size_str):
+    unit = size_str[-1].lower()
+    units = 'kmgtp'
+    for i, u in enumerate(units):
+        if u == unit:
+            return int(round(float(size_str[:-1]) * (1024 ** (i + 1))))
+    return int(size_str)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--path', type=Path, default=Path('dataset_fs_benchmark'))
-    parser.add_argument('--file-size', type=int, default=32 * 1024)
-    parser.add_argument('--total-size', type=int, default=2 * (1024 ** 3))
+    parser.add_argument('--file-size', type=size, default=32 * 1024)
+    parser.add_argument('--total-size', type=size, default=2 * (1024 ** 3))
     args = parser.parse_args()
 
     if args.path.exists():
@@ -120,6 +185,8 @@ def main():
     )
 
     mount_target = args.path / 'dataset_fs'
+    all_read_files = [mount_target / p.relative_to(dataset_path) for p in all_files]
+
     all_fs = [Ext4, SquashFs, Erofs]
     for fs_class in all_fs:
         fs: TestFS = fs_class(
@@ -129,7 +196,10 @@ def main():
             file_from=dataset_path,
         )
         with fs.test():
-            pass
+            logger.info('Benchmarking fs: %s', fs.name)
+            benchmark(all_read_files, queue_depth=1, drop_caches=3)
+            benchmark(all_read_files, queue_depth=8, drop_caches=3)
+            benchmark(all_read_files, queue_depth=64, drop_caches=3)
 
 
     logger.info('Cleanup')
