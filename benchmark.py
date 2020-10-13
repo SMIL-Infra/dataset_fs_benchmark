@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import random
 import shutil
@@ -8,7 +9,6 @@ from contextlib import contextmanager
 from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import List, Sequence
-import json
 
 from fake_dataset import generate_fake_dataset
 
@@ -194,6 +194,11 @@ def main():
 
     all_fs = [Ext4, SquashFs, Erofs]
     results = {}
+    if args.output.exists():
+        with args.output.open('r') as f:
+            results = json.load(f)
+    assert isinstance(results, dict)
+
     for fs_class in all_fs:
         fs: TestFS = fs_class(
             base_path=args.path,
@@ -211,9 +216,9 @@ def main():
                 res['queueDepth'] = qdepth
                 res['dropCaches'] = 3
                 fs_results.append(res)
-        results[fs.name] = fs_results
-        with args.output.open('w') as f:
-            json.dump(results, f, indent=4)
+            results[fs.name] = fs_results
+            with args.output.open('w') as f:
+                json.dump(results, f, indent=4)
 
     logger.info('Cleanup')
     subprocess.run(['sudo', 'umount', str(args.path)], check=True)
