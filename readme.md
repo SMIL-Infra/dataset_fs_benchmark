@@ -24,6 +24,6 @@
 * sudo权限
 
 ```bash
-sudo apt install python3 python3-pip squashfs-tools erofs-utils fuse-zip archivemount
+sudo apt install python3 python3-pip squashfs-tools erofs-utils zip fuse-zip archivemount
 pip install -r requirments.txt
 ```

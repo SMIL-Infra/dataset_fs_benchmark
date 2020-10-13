@@ -41,6 +41,14 @@ class TestFS:
             logger.info('Teardown filesystem %s', self.name)
             self.teardown()
 
+class Link(TestFS):
+    name = 'link'
+
+    def setup(self):
+        self.mount_target.symlink_to(self.file_from.relative_to(self.mount_target.parent))
+    def teardown(self):
+        self.mount_target.unlink()
+
 
 class Ext4(TestFS):
     name = 'ext4'
@@ -72,12 +80,11 @@ class SquashFs(TestFS):
     def fs_image_path(self):
         return self.base_path / 'dataset.sfs'
 
+    def _mksquashfs(self):
+        raise NotImplementedError()
+
     def setup(self):
-        subprocess.run([
-            'mksquashfs', str(self.file_from), str(self.fs_image_path),
-            '-noD', '-noI', '-noF', '-noX', '-no-duplicates', '-no-sparse',
-            '-mem', '4G', '-processors', '4'], check=True,
-        )
+        self._mksquashfs()
         self.mount_target.mkdir()
         subprocess.run(['sudo', 'mount', '-o', 'loop', str(self.fs_image_path), str(self.mount_target)], check=True)
 
@@ -86,6 +93,23 @@ class SquashFs(TestFS):
         self.mount_target.rmdir()
         self.fs_image_path.unlink()
 
+class SquashFs_AllUncompressed(SquashFs):
+    name = 'squashfs-all-uncompressed'
+    def _mksquashfs(self):
+        subprocess.run([
+            'mksquashfs', str(self.file_from), str(self.fs_image_path),
+            '-noD', '-noI', '-noF', '-noX', '-no-duplicates', '-no-sparse',
+            '-mem', '4G', '-processors', '4'], check=True,
+        )
+
+class SquashFs_DataUncompressed(SquashFs):
+    name = 'squashfs-data-uncompressed'
+    def _mksquashfs(self):
+        subprocess.run([
+            'mksquashfs', str(self.file_from), str(self.fs_image_path),
+            '-noD', '-no-duplicates', '-no-sparse',
+            '-mem', '4G', '-processors', '4'], check=True,
+        )
 
 class Erofs(TestFS):
     name = 'erofs'
@@ -104,19 +128,42 @@ class Erofs(TestFS):
         self.mount_target.rmdir()
         self.fs_image_path.unlink()
 
+class Zip(TestFS):
+    @property
+    def zip_path(self):
+        return self.base_path / 'dataset.zip'
+    def _zip(self):
+        subprocess.run(['zip', '-0', '-q', '-r', str(self.zip_path.absolute()), '.'], cwd=self.file_from, check=True)
+    def teardown(self):
+        subprocess.run(['fusermount', '-u', str(self.mount_target)], check=True)
+        self.mount_target.rmdir()
+        self.zip_path.unlink()
+
+class FuseZip(Zip):
+    name='fuse-zip'
+    def setup(self):
+        self._zip()
+        self.mount_target.mkdir()
+        subprocess.run(['fuse-zip', '-r', str(self.zip_path), str(self.mount_target)])
+
+class ArchiveMount(Zip):
+    name='archivemount'
+    def setup(self):
+        self._zip()
+        self.mount_target.mkdir()
+        subprocess.run(['archivemount', '-o', 'readonly', str(self.zip_path), str(self.mount_target)])
 
 def benchmark_worker(path_queue: Queue, exit_time: float, result_queue: Queue):
     completed_count = 0
     while True:
         t = time.perf_counter()
-        if t > exit_time:
-            break
         p = path_queue.get()
         if p is None:
             break
-        with p.open('rb') as f:
-            f.read()
-        completed_count += 1
+        if t < exit_time:
+            with p.open('rb') as f:
+                f.read()
+            completed_count += 1
 
     logger.debug('Worker finished. completed %d files', completed_count)
     result_queue.put(completed_count)
@@ -192,7 +239,7 @@ def main():
     mount_target = args.path / 'dataset_fs'
     all_read_files = [mount_target / p.relative_to(dataset_path) for p in all_files]
 
-    all_fs = [Ext4, SquashFs, Erofs]
+    all_fs = [Link, Ext4, SquashFs_AllUncompressed, SquashFs_DataUncompressed, Erofs, FuseZip, ArchiveMount]
     results = {}
     if args.output.exists():
         with args.output.open('r') as f:
